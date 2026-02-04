@@ -54,192 +54,130 @@ python hf_downloader.py shashuo0104/phystwin-rope main --repo-type model --downl
 
 python hf_downloader.py shashuo0104/phystwin-T-block main --repo-type model --download_path ./T
 
+```
+# 如果是公开数据集，直接运行：
+python hf_downloader.py agibot_world/GenieSimAssets master --provider ms --repo-type dataset --download_path ./assets
+
+python hf_downloader.py agibot_world/GenieSimAssets master --provider ms --repo-type dataset --download_path ./assets1
+
+# 如果 ModelScope 提示需要登录，请先设置 Token：
+# export MS_TOKEN=你的ModelScope_SDK_Token
+```
+
+
+
 
 ```python
 import os
 import requests
-import json
 import argparse
-from urllib.parse import urljoin, quote
-import re # 确保导入 re 模块
+from urllib.parse import quote, urlencode
+import re
 
-def fetch_file_list(repo_id, branch, repo_type, hf_token):
-    """
-    Fetches a recursive list of files from a Hugging Face repository,
-    handling API pagination for very large repositories.
-    repo_type can be 'model' or 'dataset'.
-    """
+def fetch_file_list(repo_id, branch, repo_type, provider, token):
     all_files = []
-    next_url = f"https://huggingface.co/api/{repo_type}s/{repo_id}/tree/{branch}?recursive=true"
-  
-    headers = {}
-    if hf_token:
-        headers["Authorization"] = f"Bearer {hf_token}"
-
-    page_num = 1
-    while next_url:
-        print(f"Fetching file list page {page_num} from: {next_url}")
-        response = requests.get(next_url, headers=headers)
-  
-        if response.status_code != 200:
-            print(f"Failed to fetch data from {next_url}. Status code: {response.status_code}")
-            print(f"Response: {response.text}")
-            print("Please ensure your HF_TOKEN is correct and has the necessary permissions.")
-            return None 
-
-        all_files.extend(response.json())
-
-        link_header = response.headers.get("Link")
-        next_url = None 
-        if link_header:
-            match = re.search(r'<([^>]+)>;\s*rel="next"', link_header)
-            if match:
-                next_url = match.group(1)
-  
-        page_num += 1
-
-    if all_files is None:
-        exit(1)
-
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    
+    if provider == 'hf':
+        next_url = f"https://huggingface.co/api/{repo_type}s/{repo_id}/tree/{branch}?recursive=true"
+        while next_url:
+            response = requests.get(next_url, headers=headers)
+            if response.status_code != 200: return None
+            all_files.extend(response.json())
+            match = re.search(r'<([^>]+)>;\s*rel="next"', response.headers.get("Link", ""))
+            next_url = match.group(1) if match else None
+    else:  
+        # ModelScope 适配
+        ms_repo_type = "datasets" if repo_type == "dataset" else "models"
+        # ModelScope 的文件列表接口是 /repo/tree
+        api_url = f"https://modelscope.cn/api/v1/{ms_repo_type}/{repo_id}/repo/tree"
+        
+        page_number = 1
+        while True:
+            params = {"Recursive": "true", "Revision": branch, "PageNumber": page_number, "PageSize": 1000}
+            response = requests.get(api_url, params=params, headers=headers)
+            if response.status_code != 200:
+                print(f"Failed to fetch list at page {page_number}: {response.text}")
+                return None if page_number == 1 else all_files
+            
+            data = response.json()
+            files_data = data.get('Data', {}).get('Files', [])
+            if not files_data:
+                break
+                
+            for f in files_data:
+                all_files.append({
+                    'path': f['Path'],
+                    'type': 'file' if f['Type'].lower() == 'blob' else 'folder'
+                })
+            
+            # 如果当前页的文件数小于 PageSize，说明已经到最后一页了
+            if len(files_data) < 1000:
+                break
+            page_number += 1
     return all_files
 
-# --- MODIFIED FUNCTION ---
-def generate_links_file(file_list, repo_id, branch, download_path, repo_type, subfolder=None): # <--- MODIFIED: Added subfolder parameter
-    """
-    Generates the download_links.txt file from the file list.
-    Optionally filters for a specific subfolder.
-    """
+def generate_links_file(file_list, repo_id, branch, download_path, repo_type, provider, subfolder=None):
     os.makedirs(download_path, exist_ok=True)
+    download_links = []
   
-    download_links_with_out = []
-  
-    if repo_type == 'dataset':
-        base_url = f"https://huggingface.co/datasets/{repo_id}/resolve/{branch}/"
-    else:
-        base_url = f"https://huggingface.co/{repo_id}/resolve/{branch}/"
-  
-    # <--- MODIFIED: Filtering logic starts here
-    if subfolder:
-        # 规范化路径，确保它以'/'结尾，以便正确匹配前缀
-        prefix = subfolder.strip('/') + '/'
-        print(f"Filtering for files within subfolder: {prefix}")
-        filtered_list = [f for f in file_list if f.get('type') == 'file' and f['path'].startswith(prefix)]
-        print(f"Found {len(filtered_list)} files to download in the specified subfolder.")
-    else:
-        filtered_list = file_list
-    # <--- MODIFIED: Filtering logic ends here
+    # 过滤文件
+    prefix = subfolder.strip('/') + '/' if subfolder else ""
+    filtered_list = [f for f in file_list if f.get('type') == 'file' and f['path'].startswith(prefix)]
 
     for file_info in filtered_list:
-        if file_info.get('type') == 'file':
-            file_path = file_info['path']
-  
-            local_file_dir = os.path.dirname(os.path.join(download_path, file_path))
-            if local_file_dir:
-                os.makedirs(local_file_dir, exist_ok=True)
-  
-            file_url = urljoin(base_url, quote(file_path, safe=''))
-            # aria2c 的 out 选项会保留相对路径，所以下载后会自动创建子文件夹
-            aria2c_options = f"  out={file_path}" 
-            download_links_with_out.append((file_url, aria2c_options))
+        file_path = file_info['path']
+        
+        if provider == 'hf':
+            base = f"https://huggingface.co/{'datasets/' if repo_type == 'dataset' else ''}{repo_id}/resolve/{branch}/"
+            url = base + quote(file_path)
+        else:
+            ms_type = "datasets" if repo_type == "dataset" else "models"
+            # 构造下载 URL，使用 /repo 接口并配合 Revision 和 FilePath 参数
+            params = urlencode({"Revision": branch, "FilePath": file_path})
+            url = f"https://modelscope.cn/api/v1/{ms_type}/{repo_id}/repo?{params}"
 
-    if not download_links_with_out:
-        print("No files found to generate links for. Check your repo_id, branch, and subfolder path.")
+        # aria2c 配置：out 需要是文件名，但我们要保留目录结构
+        # 使用 out 选项确保 aria2c 把文件放在正确的子目录里
+        aria2_out = f"  out={file_path}" 
+        download_links.append((url, aria2_out))
+
+    if not download_links:
+        print("No files found.")
         return
 
-    download_file_path = os.path.join(download_path, "download_links.txt")
-    with open(download_file_path, "w") as f:
-        for url, options in download_links_with_out:
-            f.write(f"{url}\n{options}\n")
-      
-    print(f"Successfully generated {len(download_links_with_out)} file links in {download_file_path}")
+    links_txt = os.path.join(download_path, "download_links.txt")
+    with open(links_txt, "w") as f:
+        for url, out in download_links:
+            f.write(f"{url}\n{out}\n")
+    print(f"Total files: {len(download_links)}. Links saved to {links_txt}")
 
-def start_download(download_path, hf_token):
-    """
-    Starts the download using aria2c with an existing download_links.txt file.
-    """
-    download_file_path = os.path.join(download_path, "download_links.txt")
-    if not os.path.exists(download_file_path):
-        print(f"Error: download_links.txt not found in {download_path}")
-        print("Please generate the links file first using the --generate-only option.")
-        exit(1)
-
-    aria2_header_option = ""
-    if hf_token:
-        aria2_header_option = f'--header="Authorization: Bearer {hf_token}"'
-
-    session_file_path = os.path.join(download_path, "aopoli.session")
-
-    print("Starting download with aria2c (using session file for speed)...")
-    command = f'aria2c -x 16 -c --retry-wait=5 --max-tries=0 {aria2_header_option} -i "{download_file_path}" -d "{download_path}" --save-session="{session_file_path}" --save-session-interval=60'
-
-    exit_code = os.system(command)
-    return exit_code
-
-def mark_completion(download_path):
-    """
-    Appends a completion message to the download_links.txt file.
-    """
-    download_file_path = os.path.join(download_path, "download_links.txt")
-    if os.path.exists(download_file_path):
-        with open(download_file_path, "a") as f:
-            f.write("\n# 全部下载完成\n")
-        print("Marked download_links.txt as complete.")
+def start_download(download_path, token):
+    links_txt = os.path.join(download_path, "download_links.txt")
+    header = f'--header="Authorization: Bearer {token}"' if token else ""
+    # 关键：ModelScope 的 API 会返回 302 重定向到 CDN，aria2c 必须处理重定向
+    # 增加 --check-certificate=false 防止某些容器内证书报错
+    cmd = (f'aria2c -x 16 -s 16 -c --check-certificate=false '
+           f'-i "{links_txt}" -d "{download_path}" {header} --file-allocation=none')
+    os.system(cmd)
 
 def main():
-    parser = argparse.ArgumentParser(description="Download files from Hugging Face repository using aria2c")
-    parser.add_argument("repo_id", help="The Hugging Face repository ID")
-    parser.add_argument("branch", help="The branch to download from")
-    parser.add_argument("--repo-type", default="model", choices=["model", "dataset"], help="Type of the repository. Default is 'model'.")
-    parser.add_argument("--download_path", default=None, help="The path to save files. Defaults to a directory named after the repo_id.")
-  
-    # <--- MODIFIED: Added new argument
-    parser.add_argument("--subfolder", default=None, help="Specify a subfolder to download. Only files within this folder will be downloaded.")
-
-    parser.add_argument("--generate-only", action="store_true", help="Only generate the download_links.txt file and exit.")
-    parser.add_argument("--download-only", action="store_true", help="Start download using an existing download_links.txt file.")
-  
+    parser = argparse.ArgumentParser()
+    parser.add_argument("repo_id")
+    parser.add_argument("branch")
+    parser.add_argument("--provider", default="hf", choices=["hf", "ms"])
+    parser.add_argument("--repo-type", default="model", choices=["model", "dataset"])
+    parser.add_argument("--download_path", default=None)
+    parser.add_argument("--subfolder", default=None)
+    
     args = parser.parse_args()
-  
-    hf_token = os.getenv("HF_TOKEN")
-    if not hf_token and not args.generate_only:
-        print("Warning: HF_TOKEN environment variable is not set. Downloads for gated models may fail.")
+    token = os.getenv("MS_TOKEN") if args.provider == "ms" else os.getenv("HF_TOKEN")
+    path = args.download_path or f"./{args.repo_id.split('/')[-1]}"
 
-    download_path = args.download_path
-    if download_path is None:
-        download_path = f"./{args.repo_id.split('/')[-1]}"
-
-    if args.generate_only:
-        print("Mode: Generate links only")
-        file_list = fetch_file_list(args.repo_id, args.branch, args.repo_type, hf_token)
-        if file_list:
-            # <--- MODIFIED: Pass subfolder argument
-            generate_links_file(file_list, args.repo_id, args.branch, download_path, args.repo_type, args.subfolder)
-        else:
-            print("Could not generate links file because fetching file list failed.")
-      
-    elif args.download_only:
-        print("Mode: Download only")
-        exit_code = start_download(download_path, hf_token)
-        if exit_code == 0:
-            print("aria2c completed successfully.")
-            mark_completion(download_path)
-        else:
-            print(f"aria2c exited with error code: {exit_code}. Completion not marked.")
-
-    else: # Default mode: generate and then download
-        print("Mode: Generate and Download")
-        file_list = fetch_file_list(args.repo_id, args.branch, args.repo_type, hf_token)
-        if file_list:
-            # <--- MODIFIED: Pass subfolder argument
-            generate_links_file(file_list, args.repo_id, args.branch, download_path, args.repo_type, args.subfolder)
-            exit_code = start_download(download_path, hf_token)
-            if exit_code == 0:
-                print("aria2c completed successfully.")
-                mark_completion(download_path)
-            else:
-                print(f"aria2c exited with error code: {exit_code}. Completion not marked.")
-        else:
-            print("Could not start download because fetching file list failed.")
+    files = fetch_file_list(args.repo_id, args.branch, args.repo_type, args.provider, token)
+    if files:
+        generate_links_file(files, args.repo_id, args.branch, path, args.repo_type, args.provider, args.subfolder)
+        start_download(path, token)
 
 if __name__ == "__main__":
     main()
