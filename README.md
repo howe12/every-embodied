@@ -171,9 +171,9 @@
 | **第三阶段** | 模仿学习、大模型(VLA/VLN)、Sim2Real | 复现大模型导航VLN、OpenVLA、SmolVLA 等前沿项目，实现仿真或真实部署 |
 
   ## 🔥 News & Highlights
-
+  - **[2025-02-28]** 复刻ACT机械臂抓取水杯算法 https://www.bilibili.com/video/BV1YFAbzoECf
+  - **[2025-02-25]** 复刻mujoco机械臂数据采集 https://www.bilibili.com/video/BV1DNAbzpE6Z
   - **[2025-02-23]** 新增春晚武术机器人复刻视频教程 https://www.datawhale.cn/learn/content/258/6228
-  - **[2025-02-25]** 复刻ACT机械臂抓取水杯算法 https://www.datawhale.cn/learn/content/258/6231
   - **[2025-02-22]** 新增 ETPNav(IEEE TPAMI 2024)复现教程指导
   - **[2025-02-21]** 新增春晚武术机器人复刻
   - **[2025-02-16]** 新增GenieSim一键启动镜像和视频教程
@@ -201,6 +201,10 @@
   Mujoco仿真UR机械臂抓取实验：https://www.bilibili.com/video/BV1WhxeznE61/
 
   春晚武术机器人复刻视频教程：https://www.datawhale.cn/learn/content/258/6228
+
+  ACT机械臂抓取水杯算法训练 https://www.bilibili.com/video/BV1YFAbzoECf
+    
+  Mujoco机械臂数据采集 https://www.bilibili.com/video/BV1DNAbzpE6Z
 
   
 
